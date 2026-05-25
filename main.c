@@ -8,6 +8,7 @@
 #include <openssl/core_names.h>
 #include <openssl/hmac.h>
 #include <openssl/rand.h>
+#include <openssl/core_names.h>
 
 
 EVP_PKEY* generate_key() {
@@ -139,6 +140,86 @@ unsigned char *sign_message(EVP_PKEY *private_key, unsigned char *data, int data
     return signature;
 }
 
+typedef struct Pack {
+    unsigned char IV[12];
+    unsigned char tag[16];
+    unsigned char *ciphertext;
+    int ciphertext_len;
+    unsigned char *signature;
+    int signature_len;
+    unsigned char *aad;
+    int aad_len;
+    unsigned char *sender_pub_key;
+    int pub_key_len;
+
+} Pack;
+
+int decrypt(Pack message, unsigned char *enc_key) {
+    EVP_PKEY_CTX *ctx;
+    ctx = EVP_PKEY_CTX_new_from_name(NULL, "EC", NULL);
+
+    EVP_PKEY_fromdata_init(ctx);
+
+    OSSL_PARAM params[3];
+    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME, "secp256k1", 0);
+    params[1] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PUB_KEY, message.sender_pub_key, message.pub_key_len);
+    params[2] = OSSL_PARAM_construct_end();
+
+    EVP_PKEY *received_pub_key = NULL;
+    EVP_PKEY_fromdata(ctx, &received_pub_key, EVP_PKEY_PUBLIC_KEY, params);
+
+    EVP_PKEY_CTX_free(ctx);
+
+    
+    int len = 0;
+    int text_len = 0;
+    int data_len = 12 + message.ciphertext_len + 16;
+    unsigned char *decrypted_text = malloc(message.ciphertext_len + 1);
+    unsigned char *data = malloc(data_len);
+
+    memcpy(data, message.IV, 12);
+    memcpy(data + 12, message.ciphertext, message.ciphertext_len);
+    memcpy(data + 12 + message.ciphertext_len, message.tag, 16);
+
+    EVP_MD_CTX *md_ctx;
+    md_ctx = EVP_MD_CTX_new();
+
+    EVP_DigestVerifyInit(md_ctx, NULL, EVP_sha256(), NULL, received_pub_key);
+    EVP_DigestVerifyUpdate(md_ctx, data, data_len);
+    int res = EVP_DigestVerifyFinal(md_ctx, message.signature, message.signature_len);
+
+    if (res == 1) {
+        printf("Подпись верна!\n");
+    }
+
+    EVP_CIPHER_CTX *cipher_ctx;
+    cipher_ctx = EVP_CIPHER_CTX_new();
+
+    EVP_DecryptInit_ex(cipher_ctx, EVP_aes_256_gcm(), NULL, NULL, NULL);
+
+    EVP_CIPHER_CTX_ctrl(cipher_ctx, EVP_CTRL_GCM_SET_IVLEN, 12, NULL);
+
+    EVP_DecryptInit_ex(cipher_ctx, NULL, NULL, enc_key, message.IV);
+
+    EVP_DecryptUpdate(cipher_ctx, NULL, &len, message.aad, message.aad_len);
+
+    EVP_DecryptUpdate(cipher_ctx, decrypted_text, &text_len, message.ciphertext, message.ciphertext_len);
+
+    EVP_CIPHER_CTX_ctrl(cipher_ctx, EVP_CTRL_GCM_SET_TAG, 16, message.tag);
+
+    EVP_DecryptFinal_ex(cipher_ctx, NULL, &len);
+
+    decrypted_text[text_len] = '\0';
+    printf("Расшифрованное сообщение: %s\n", decrypted_text);
+
+    free(data);
+    free(decrypted_text);
+    EVP_PKEY_free(received_pub_key);
+    EVP_MD_CTX_free(md_ctx);
+    EVP_CIPHER_CTX_free(cipher_ctx);
+    return 1;
+}
+
 int main() {
     
     if (OPENSSL_init_crypto(0, NULL) != 1) {
@@ -223,13 +304,53 @@ int main() {
     unsigned char *signature = sign_message(mikhail_key, data, data_len, &sig_len);
 
     printf("Длинна подписи: %d\n", sig_len);
+
+    size_t pub_key_len;
+    EVP_PKEY_get_octet_string_param(mikhail_key, OSSL_PKEY_PARAM_PUB_KEY, NULL, 0, &pub_key_len);
+    unsigned char *sender_pub_key = malloc(pub_key_len);
+    EVP_PKEY_get_octet_string_param(mikhail_key, OSSL_PKEY_PARAM_PUB_KEY, sender_pub_key, pub_key_len, &pub_key_len);
     
+    Pack packet;
+
+    memcpy(packet.IV, IV, 12);
+    memcpy(packet.tag, tag, 16);
+    packet.ciphertext_len = text_len;
+    packet.ciphertext = malloc(text_len);
+    memcpy(packet.ciphertext, ciphertext, text_len);
+
+    packet.signature_len = sig_len;
+    packet.signature = malloc(sig_len);
+    memcpy(packet.signature, signature, sig_len);
+
+    packet.aad_len = aad_len;
+    packet.aad = malloc(aad_len);
+    memcpy(packet.aad, aad, aad_len);
+
+    packet.pub_key_len = pub_key_len;
+    packet.sender_pub_key = malloc(pub_key_len);
+    memcpy(packet.sender_pub_key, sender_pub_key, pub_key_len);
+
+    printf("%d\n", packet.pub_key_len);
+
+    if (decrypt(packet, enc_key) == 1) {
+        printf("Успешный результат!\n");
+    } else {
+        printf("Где то прячется ошибка..\n");
+    }
+
+
+
+
     free(data);
     free(signature);
     EVP_PKEY_free(mikhail_key);
     EVP_PKEY_free(alexandra_key);
     free(mikhail_secret);
     free(alexandra_secret);
+    free(packet.ciphertext);
+    free(packet.signature);
+    free(packet.aad);
+    free(packet.sender_pub_key);
 
     OPENSSL_cleanup();
     return 0;
