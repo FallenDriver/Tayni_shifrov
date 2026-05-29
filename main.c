@@ -54,7 +54,7 @@ int main() {
 
     unsigned char IV[12];
     unsigned char tag[16];
-    unsigned char *text = (unsigned char *)"Здарова!";
+    unsigned char *text = (unsigned char *)"Здарова!"; //поле ввода текста
     int text_len = strlen((char *)text);
 
     unsigned char *aad = (unsigned char *)"Михаил->Александра";
